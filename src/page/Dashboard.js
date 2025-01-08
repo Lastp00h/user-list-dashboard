@@ -10,17 +10,15 @@ import $ from "jquery";
 import DataTable from "datatables.net-dt";
 import Swal from "sweetalert2";
 import { FaFilter, FaSearch, FaFileExport } from "react-icons/fa";
-import gapi from "gapi-client";
 
 $.DataTable = DataTable;
 
-const Dashboard = () => {
+const Dashboard = ({ token, userName }) => {
   const tableRef = useRef(null);
   const [error, setError] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [showFilters, setShowFilters] = useState(false);
   const [userData, setUserData] = useState([]);
-  // const [showControls, setShowControls] = useState(false);
   const [sheetName, setSheetName] = useState("");
 
   const [filters, setFilters] = useState({
@@ -31,32 +29,228 @@ const Dashboard = () => {
     jobTitles: [],
     companyNames: [],
   });
-  
+
   const [filterValues, setFilterValues] = useState({
-    gender: 'all',
-    city: 'all',
-    country: 'all',
-    state: 'all',
-    jobTitle: 'all',
-    companyName: 'all'
+    gender: "all",
+    city: "all",
+    country: "all",
+    state: "all",
+    jobTitle: "all",
+    companyName: "all",
   });
+
+  const SPREADSHEET_ID = "1f8SWpvGmnFmODyyy2bpnCItspyBliMwtbKKOmHERBzE";
 
   const fetchSheetName = useCallback(async () => {
     try {
       const response = await fetch(
-        `https://sheets.googleapis.com/v4/spreadsheets/1f8SWpvGmnFmODyyy2bpnCItspyBliMwtbKKOmHERBzE/?key=AIzaSyAd52jtegXY5CT_JfQ4SvoJYoQZtEye9_o`
+        `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
       );
+
+      if (!response.ok) throw new Error("Failed to fetch sheet name");
+
       const data = await response.json();
       setSheetName(data.properties.title);
     } catch (error) {
       console.error("Error fetching sheet name:", error);
+      setError("Failed to fetch sheet name");
     }
-  }, []);
+  }, [token]);
+
+  const handleExport = async () => {
+    if (!token) {
+      Swal.fire("Error", "Not authenticated. Please log in again.", "error");
+      return;
+    }
+
+    try {
+      // Show loading state
+      const loadingAlert = Swal.fire({
+        title: "Preparing Export",
+        text: "Please wait...",
+        allowOutsideClick: false,
+        allowEscapeKey: false,
+        showConfirmButton: false,
+        didOpen: () => {
+          Swal.showLoading();
+        },
+      });
+
+      const filteredData = [];
+      const table = dataTableRef.current;
+
+      // Get all visible rows from DataTable 
+      table.rows({ search: "applied" }).every(function () {
+        const rowData = this.data();
+        const photoHtml = rowData[12];
+        const photoUrl = photoHtml.match(/src="([^"]+)"/)?.[1] || "";
+        // console.log("Photo URL:", photoUrl);
+        filteredData.push({
+          id: rowData[0],
+          first_name: rowData[1],
+          last_name: rowData[2],
+          email: rowData[3],
+          gender: rowData[4],
+          city: rowData[5],
+          country: rowData[6],
+          country_code: rowData[7],
+          state: rowData[8],
+          street_address: rowData[9],
+          job_title: rowData[10],
+          company_name: rowData[11],
+          photo: photoUrl
+        });
+      });
+
+      // Create new spreadsheet
+      const createResponse = await fetch(
+        "https://sheets.googleapis.com/v4/spreadsheets",
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            properties: {
+              title: `${sheetName} ${new Date().toLocaleString()}`,
+            },
+            sheets: [
+              {
+                properties: {
+                  title: "Sheet1",
+                },
+              },
+            ],
+          }),
+        }
+      );
+
+      if (createResponse.status === 400) {
+        throw new Error("Failed to create spreadsheet. Ensure that the sheet name is valid.");
+      } else if (createResponse.status === 401) {
+        throw new Error("Failed to create spreadsheet. Not authenticated. Please log in again.");
+      } else if (createResponse.status === 403) {
+        throw new Error("Failed to create spreadsheet. Permission denied. Please check your Google Drive permissions.");
+      } else if (createResponse.status === 429) {
+        throw new Error("Failed to create spreadsheet. Too many requests. Please try later.");
+      } else if (createResponse.status === 500) {
+        throw new Error("Failed to create spreadsheet. Internal server error. Please try later.");
+      } else if (createResponse.status === 502) {
+        throw new Error("Failed to create spreadsheet. Bad gateway. Please try later.");
+      } else if (createResponse.status === 503) {
+        throw new Error("Failed to create spreadsheet. Service unavailable. Please try later.");
+      } else if (createResponse.status === 504) {
+        throw new Error("Failed to create spreadsheet. Gateway timeout. Please try later.");
+      } else if (!createResponse.ok) {
+        throw new Error("Failed to create spreadsheet");
+      }
+
+      const createResult = await createResponse.json();
+      const newSpreadsheetId = createResult.spreadsheetId;
+      const spreadsheetUrl = `https://docs.google.com/spreadsheets/d/${newSpreadsheetId}`;
+
+      // Prepare the data
+      const values = [
+        [
+          "id",
+          "first_name",
+          "last_name",
+          "email",
+          "gender",
+          "city",
+          "country",
+          "country_code",
+          "state",
+          "street_address",
+          "job_title",
+          "company_name",
+          "photo"
+
+        ],
+        ...filteredData.map((user) => [
+          user.id,
+          user.first_name,
+          user.last_name,
+          user.email,
+          user.gender,
+          user.city,
+          user.country,
+          user.country_code,
+          user.state,
+          user.street_address,
+          user.job_title,
+          user.company_name,
+          user.photo
+        ]),
+      ];
+
+      // Update spreadsheet with data
+      const updateResponse = await fetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${newSpreadsheetId}/values/Sheet1!A1:M${values.length}?valueInputOption=RAW`,
+        {
+          method: "PUT",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ values }),
+        }
+      );
+
+      if (updateResponse.status === 401) {
+        throw new Error("Failed to update spreadsheet. Unauthorized. Please re-authenticate.");
+      } else if (updateResponse.status === 403) {
+        throw new Error("Failed to update spreadsheet. Forbidden. Please check your permissions.");
+      } else if (updateResponse.status === 404) {
+        throw new Error("Failed to update spreadsheet. Spreadsheet not found. Please try later.");
+      } else if (updateResponse.status === 500) {
+        throw new Error("Failed to update spreadsheet. Internal server error. Please try later.");
+      } else if (updateResponse.status === 502) {
+        throw new Error("Failed to update spreadsheet. Bad gateway. Please try later.");
+      } else if (updateResponse.status === 503) {
+        throw new Error("Failed to update spreadsheet. Service unavailable. Please try later.");
+      } else if (updateResponse.status === 504) {
+        throw new Error("Failed to update spreadsheet. Gateway timeout. Please try later.");
+      } else if (!updateResponse.ok) {
+        throw new Error("Failed to update spreadsheet");
+      }
+
+      // Close loading alert
+      await loadingAlert.close();
+
+      // Show success message with link
+      await Swal.fire({
+        title: "Success!",
+        html: `
+          Data has been exported to a new Google Sheet<br><br>
+          <a href="${spreadsheetUrl}" target="_blank" class="">
+          ${spreadsheetUrl}
+          </a>
+        `,
+        icon: "success",
+        confirmButtonText: "Close",
+        showCloseButton: true,
+      });
+    } catch (error) {
+      console.error("Export error:", error);
+      Swal.close();
+
+      await Swal.fire({
+        title: "Export Failed",
+        text: error.message || "An error occurred while exporting data",
+        icon: "error",
+        confirmButtonText: "OK",
+      });
+    }
+  };
 
   const dataTableRef = useRef(null);
-
-  const API_URL =
-    "https://sheets.googleapis.com/v4/spreadsheets/1f8SWpvGmnFmODyyy2bpnCItspyBliMwtbKKOmHERBzE/values/user_mock_data?alt=json&key=AIzaSyAd52jtegXY5CT_JfQ4SvoJYoQZtEye9_o";
 
   const tableConfig = useMemo(
     () => ({
@@ -76,14 +270,13 @@ const Dashboard = () => {
         { title: "photo" },
       ],
       responsive: true,
-      dom: 'rt<"bottom"p>', 
+      dom: 'rt<"bottom"p>',
       pageLength: 10,
       deferRender: true,
       processing: true,
       searching: true,
       lengthChange: false,
       initComplete: function () {
-        // pagination outside the wrapper
         const paginationContainer = $(this)
           .closest(".dataTables_wrapper")
           .find(".bottom");
@@ -95,129 +288,6 @@ const Dashboard = () => {
     }),
     []
   );
-
-  const exportToSheet = useCallback(async () => {
-    try {
-      const filteredData = dataTableRef.current
-        .rows({ search: "applied" })
-        .data()
-        .toArray();
-
-      const values = [
-        [
-          "id",
-          "first_name",
-          "last_name",
-          "email",
-          "gender",
-          "city",
-          "country",
-          "country_code",
-          "state",
-          "street_address",
-          "job_title",
-          "company_name",
-          "photo",
-        ],
-        ...filteredData.map((row) => row.slice(0, -1)), 
-      ];
-
-      // Use Google Sheets API v4
-      const response = await fetch(
-        "https://sheets.googleapis.com/v4/spreadsheets",
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${gapi.auth.getToken().access_token}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            properties: {
-              title: `Exported Data ${new Date().toLocaleDateString()}`,
-            },
-            sheets: [
-              {
-                properties: {
-                  title: "Sheet1",
-                },
-                data: [
-                  {
-                    startRow: 0,
-                    startColumn: 0,
-                    rowData: values.map((row) => ({
-                      values: row.map((cell) => ({
-                        userEnteredValue: { stringValue: cell.toString() },
-                      })),
-                    })),
-                  },
-                ],
-              },
-            ],
-          }),
-        }
-      );
-
-      const result = await response.json();
-
-      if (result.spreadsheetId) {
-        const spreadsheetUrl = `https://docs.google.com/spreadsheets/d/${result.spreadsheetId}`;
-        Swal.fire({
-          title: "Success!",
-          text: "Data has been exported to a new Google Sheet",
-          icon: "success",
-          footer: `<a href="${spreadsheetUrl}" target="_blank">Open Spreadsheet</a>`,
-        });
-      }
-    } catch (error) {
-      console.error("Export error:", error);
-      if (error.message.includes("auth")) {
-        Swal.fire({
-          title: "Authentication Required",
-          text: "Please sign in to Google to export data",
-          icon: "warning",
-          showCancelButton: true,
-          confirmButtonText: "Sign In",
-        }).then((result) => {
-          if (result.isConfirmed) {
-            gapi.auth2.getAuthInstance().signIn();
-          }
-        });
-      } else {
-        Swal.fire({
-          title: "Error",
-          text: "Failed to export data",
-          icon: "error",
-        });
-      }
-    }
-  }, []);
-
-  useEffect(() => {
-    // Load the Google API client
-    const loadGoogleAPI = () => {
-      const script = document.createElement("script");
-      script.src = "https://apis.google.com/js/api.js";
-      script.onload = () => {
-        gapi.load("client:auth2", initClient);
-      };
-      document.body.appendChild(script);
-    };
-
-    // Initialize the Google API client
-    const initClient = () => {
-      gapi.client.init({
-        apiKey: "AIzaSyCyauCWqOy72VTzfMy3jO3OVntnaaQGnho",
-        clientId:
-          "33502154602-a2nbhf8mdce66g1u2t0sk6ad4cbfnf54.apps.googleusercontent.com",
-        discoveryDocs: [
-          "https://sheets.googleapis.com/$discovery/rest?version=v4",
-        ],
-        scope: "https://www.googleapis.com/auth/spreadsheets",
-      });
-    };
-
-    loadGoogleAPI();
-  }, []);
 
   const handleSearch = useCallback((value) => {
     if (dataTableRef.current) {
@@ -332,9 +402,18 @@ const Dashboard = () => {
   }, [fetchSheetName]);
 
   const fetchData = useCallback(async () => {
+    if (!token) return;
+
     try {
       setIsLoading(true);
-      const response = await fetch(API_URL);
+      const response = await fetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/user_mock_data`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
 
       if (!response.ok) {
         throw new Error(`HTTP error! Status: ${response.status}`);
@@ -405,7 +484,7 @@ const Dashboard = () => {
     } finally {
       setIsLoading(false);
     }
-  }, [API_URL, tableConfig, filterFunction]);
+  }, [token, tableConfig, filterFunction]);
 
   useEffect(() => {
     fetchData();
@@ -425,12 +504,12 @@ const Dashboard = () => {
         id={id}
         className="form-select"
         style={{ width: "auto", minWidth: "150px" }}
-        value={filterValues[id.replace('Filter', '')]}
+        value={filterValues[id.replace("Filter", "")]}
         onChange={(e) => {
           const newValue = e.target.value;
-          setFilterValues(prev => ({
+          setFilterValues((prev) => ({
             ...prev,
-            [id.replace('Filter', '')]: newValue
+            [id.replace("Filter", "")]: newValue,
           }));
           dataTableRef.current.draw();
         }}
@@ -475,7 +554,7 @@ const Dashboard = () => {
               <div className="d-flex align-items-center">
                 <button
                   className="btn btn-outline-success me-2"
-                  onClick={exportToSheet}
+                  onClick={handleExport}
                 >
                   <FaFileExport className="me-2" />
                   Export to Sheet
@@ -551,8 +630,7 @@ const Dashboard = () => {
             <div
               id="myTable_paginate"
               className="dataTables_paginate paging_simple_numbers text-de"
-            >
-            </div>
+            ></div>
           </div>
         </>
       )}

@@ -1,26 +1,29 @@
 import React, { useState, useEffect } from "react";
 import { Routes, Route, useNavigate, Navigate } from "react-router-dom";
-import { GoogleOAuthProvider, GoogleLogin } from "@react-oauth/google";
+import { GoogleOAuthProvider, useGoogleLogin } from "@react-oauth/google";
 import NavBarHeader from "./components/navBar";
 import Dashboard from "./page/Dashboard";
 
 function App() {
   const navigate = useNavigate();
-  const [isAuthenticated, setIsAuthenticated] = useState(null); 
+  const [isAuthenticated, setIsAuthenticated] = useState(null);
   const [userName, setUserName] = useState("");
   const [isLoading, setIsLoading] = useState(true);
+  const [accessToken, setAccessToken] = useState(null);
 
-  const clientID =
-    "166908675306-m2dbp79c1nudmpe97lm93a5i8ntbcask.apps.googleusercontent.com";
+  const clientID = "33502154602-a2nbhf8mdce66g1u2t0sk6ad4cbfnf54.apps.googleusercontent.com";
 
+  // Check authentication status on page load
   useEffect(() => {
     const checkAuth = () => {
-      const authStatus = localStorage.getItem("isAuthenticated");
+      const authStatus = localStorage.getItem("isAuthenticated") === "true";
       const savedUserName = localStorage.getItem("userName");
+      const token = localStorage.getItem("accessToken");
 
-      if (authStatus === "true" && savedUserName) {
+      if (authStatus && savedUserName && token) {
         setIsAuthenticated(true);
         setUserName(savedUserName);
+        setAccessToken(token);
       } else {
         setIsAuthenticated(false);
       }
@@ -28,36 +31,41 @@ function App() {
     };
 
     checkAuth();
+  }, []);
 
-    // Disable scrolling when not authenticated
-    if (isLoading || !isAuthenticated) {
-      document.body.style.overflow = 'hidden';
-    } else {
-      document.body.style.overflow = 'auto'; // Restore scrolling when authenticated
-    }
-
-    // Cleanup when the component is unmounted or isLoading changes
-    return () => {
-      document.body.style.overflow = 'auto'; // Reset overflow when the component unmounts
-    };
-  }, [isLoading, isAuthenticated]);
-
-  const handleLoginSuccess = (credentialResponse) => {
-    console.log("Login Success:", credentialResponse);
-
-    const decoded = JSON.parse(
-      atob(credentialResponse.credential.split(".")[1])
-    );
-    const name = decoded.name;
-
-    setIsAuthenticated(true);
-    setUserName(name);
-
-    localStorage.setItem("isAuthenticated", "true");
-    localStorage.setItem("userName", name);
-
-    navigate("/dashboard");
-  };
+  const login = useGoogleLogin({
+    onSuccess: async (tokenResponse) => {
+      console.log("OAuth2 Token Response:", tokenResponse);
+      
+      try {
+        const userInfoResponse = await fetch(
+          'https://www.googleapis.com/oauth2/v3/userinfo',
+          {
+            headers: {
+              Authorization: `Bearer ${tokenResponse.access_token}`,
+            },
+          }
+        );
+        
+        const userInfo = await userInfoResponse.json();
+        console.log("User Info:", userInfo);
+        setIsAuthenticated(true);
+        setUserName(userInfo.name);
+        setAccessToken(tokenResponse.access_token);
+        
+        localStorage.setItem("isAuthenticated", "true");
+        localStorage.setItem("userName", userInfo.name);
+        localStorage.setItem("accessToken", tokenResponse.access_token);
+        
+        navigate("/dashboard");
+      } catch (error) {
+        console.error("Error fetching user info:", error);
+        handleLoginFailure(error);
+      }
+    },
+    onError: (error) => handleLoginFailure(error),
+    scope: "https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/userinfo.profile"
+  });
 
   const handleLoginFailure = (error) => {
     console.log("Login Failed:", error);
@@ -67,13 +75,15 @@ function App() {
   const handleLogout = () => {
     setIsAuthenticated(false);
     setUserName("");
+    setAccessToken(null);
     localStorage.removeItem("isAuthenticated");
     localStorage.removeItem("userName");
+    localStorage.removeItem("accessToken");
     navigate("/");
   };
 
   if (isLoading) {
-    return <div>Loading...</div>; 
+    return <div>Loading...</div>;
   }
 
   return (
@@ -91,29 +101,23 @@ function App() {
                 <div className="text-center overflow-hidden">
                   <h1 className="mb-4">Please Login to Access Dashboard</h1>
                   <GoogleOAuthProvider clientId={clientID}>
-                    <GoogleLogin
-                      // width="250"
-                      shape="pill"
-                      size="medium"
-                      text="continue_with"
-                      onSuccess={handleLoginSuccess}
-                      onError={handleLoginFailure}
-                    />
+                    <button 
+                      onClick={() => login()} 
+                      className="btn btn-primary"
+                    >
+                      Continue with Google
+                    </button>
                   </GoogleOAuthProvider>
                 </div>
               </div>
             )
           }
         />
-
         <Route
           path="/dashboard"
           element={
-            <ProtectedRoute
-              isAuthenticated={isAuthenticated}
-              isLoading={isLoading}
-            >
-              <Dashboard />
+            <ProtectedRoute isAuthenticated={isAuthenticated} isLoading={isLoading}>
+              <Dashboard token={accessToken} userName={userName} />
             </ProtectedRoute>
           }
         />
@@ -124,7 +128,7 @@ function App() {
 
 function ProtectedRoute({ isAuthenticated, isLoading, children }) {
   if (isLoading) {
-    return <div>Loading...</div>; 
+    return <div>Loading...</div>;
   }
 
   if (!isAuthenticated) {
